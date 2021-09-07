@@ -1,8 +1,6 @@
 SHELL = bash
 GOGOVERSION?=$(shell grep github.com/gogo/protobuf go.mod | awk '{print $$2}')
 GOTOOLS = \
-	github.com/elazarl/go-bindata-assetfs/go-bindata-assetfs@master \
-	github.com/hashicorp/go-bindata/go-bindata@master \
 	golang.org/x/tools/cmd/cover \
 	golang.org/x/tools/cmd/stringer \
 	github.com/gogo/protobuf/protoc-gen-gofast@$(GOGOVERSION) \
@@ -16,7 +14,6 @@ GOARCH?=$(shell go env GOARCH)
 GOPATH=$(shell go env GOPATH)
 MAIN_GOPATH=$(shell go env GOPATH | cut -d: -f1)
 
-ASSETFS_PATH?=agent/uiserver/bindata_assetfs.go
 # Get the git commit
 GIT_COMMIT?=$(shell git rev-parse --short HEAD)
 GIT_COMMIT_YEAR?=$(shell git show -s --format=%cd --date=format:%Y HEAD)
@@ -274,16 +271,8 @@ lint:
 		(cd api && golangci-lint run --build-tags '$(GOTAGS)') && \
 		(cd sdk && golangci-lint run --build-tags '$(GOTAGS)')
 
-# If you've run "make ui" manually then this will get called for you. This is
-# also run as part of the release build script when it verifies that there are no
-# changes to the UI assets that aren't checked in.
-static-assets:
-	@go-bindata-assetfs -pkg uiserver -prefix pkg -o $(ASSETFS_PATH) ./pkg/web_ui/...
-	@go fmt $(ASSETFS_PATH)
-
-
-# Build the static web ui and build static assets inside a Docker container
-ui: ui-docker static-assets-docker
+# Build the static web ui inside a Docker container
+ui: ui-docker
 
 tools:
 	@mkdir -p .gotools
@@ -314,9 +303,6 @@ go-build-image:
 ui-build-image:
 	@echo "Building UI build container"
 	@docker build $(NOCACHE) $(QUIET) -t $(UI_BUILD_TAG) - < build-support/docker/Build-UI.dockerfile
-
-static-assets-docker: go-build-image
-	@$(SHELL) $(CURDIR)/build-support/scripts/build-docker.sh static-assets
 
 consul-docker: go-build-image
 	@$(SHELL) $(CURDIR)/build-support/scripts/build-docker.sh consul
@@ -372,6 +358,6 @@ envoy-regen:
 	@find "command/connect/envoy/testdata" -name '*.golden' -delete
 	@go test -tags '$(GOTAGS)' ./command/connect/envoy -update
 
-.PHONY: all bin dev dist cov test test-flake test-internal cover lint ui static-assets tools
-.PHONY: docker-images go-build-image ui-build-image static-assets-docker consul-docker ui-docker
+.PHONY: all bin dev dist cov test test-flake test-internal cover lint ui tools
+.PHONY: docker-images go-build-image ui-build-image consul-docker ui-docker
 .PHONY: version proto test-envoy-integ

@@ -39,6 +39,5 @@ github_checks:
   annotations: false
 
 ignore:
-  - "agent/uiserver/bindata_assetfs.go"
   - "vendor/**/*"
   - "**/*.pb.go"
