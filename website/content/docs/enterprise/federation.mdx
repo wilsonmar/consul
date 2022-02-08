@@ -31,3 +31,12 @@ can make queries to the remote datacenter in service of both API and DNS
 requests for remote resources (in spite of the partially-connected nature of the
 topology as a whole). Consul datacenters can simultaneously participate in both
 network areas and the existing WAN pool, which eases migration.
+
+## Requirements
+
+- Consul Enterprise 0.8+
+- Direct connectivity between all Consul servers in the datacenters you wish to
+  pairwise federate with a network area
+  - To ensure connectivity is direct, not funneled through mesh gateways, verify that
+    [`connect.enable_mesh_gateway_wan_federation`](/docs/agent/options#connect_enable_mesh_gateway_wan_federation)
+    is set to `false` (default)
