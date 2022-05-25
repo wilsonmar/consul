@@ -23,8 +23,10 @@ The following diagram shows the main components of the Consul architecture when 
    for Consul and Envoy.
 1. **Health Syncing:** Optionally, an additional `health-sync` container can be included in a task to sync health statuses
    from ECS into Consul.
-1. **ACL Controller:** Automatically provisions Consul ACL tokens for Consul clients and service mesh services
-   in an ECS Cluster.
+1. **ACL Controller:** The ACL controller is responsible for automating configuration and cleanup in the Consul servers.
+   The ACL controller will automatically configure the [AWS IAM Auth Method](/security/acl/auth-methods/aws-iam), and cleanup
+   unused ACL tokens from Consul. When using Consul Enterprise namespaces, the ACL controller will automatically create Consul
+   namespaces for ECS tasks.
 
 For more information about how Consul works in general, see Consul's [Architecture Overview](/docs/architecture).
 
@@ -39,15 +41,27 @@ This diagram shows the timeline of a task starting up and all its containers:
 </ImageConfig>
 
 - **T0:** ECS starts the task. The `consul-client` and `mesh-init` containers start:
-  - `consul-client` uses the `retry-join` option to join the Consul cluster
-  - `mesh-init` registers the service for the current task and its sidecar proxy with
-    Consul. It runs `consul connect envoy -bootstrap` to generate Envoy’s
-    bootstrap JSON file and write it to a shared volume. `mesh-init` exits after completing these operations.
-
+  - `consul-client` does the following:
+    - If ACLs are enabled, a startup script runs a `consul login` command to obtain a
+      token from the AWS IAM auth method for the Consul client. This token has `node:write`
+      permissions.
+    - It uses the `retry-join` option to join the Consul cluster.
+  - `mesh-init` does the following:
+    - If ACLs are enabled, mesh-init runs a `consul login` command to obtain a token from
+      the AWS IAM auth method for the service registration. This token has `service:write`
+      permissions for the service and its sidecar proxy. This token is written to a shared
+      volume for use by the `health-sync` container.
+    - It registers the service for the current task and its sidecar proxy with Consul.
+    - It runs `consul connect envoy -bootstrap` to generate Envoy’s bootstrap JSON file and
+      writes it to a shared volume.
 - **T1:** The following containers start:
-  - The `sidecar-proxy` container starts and runs Envoy by executing `envoy -c <path-to-bootstrap-json>`.
-  - If applicable, the `health-sync` container syncs health checks from ECS to Consul (see [ECS Health Check Syncing](#ecs-health-check-syncing)).
-- **T2:** The `sidecar-proxy` container is marked as healthy by ECS. It uses a health check that detects if its public listener port is open. At this time, your application containers are started since all Consul machinery is ready to service requests. The only running containers are `consul-client`, `sidecar-proxy`, and your application container(s).
+  - `sidecar-proxy` starts using a custom entrypoint command, `consul-ecs envoy-entrypoint`.
+     The entrypoint command starts Envoy by running `envoy -c <path-to-bootstrap-json>`.
+  - `health-sync` starts if ECS health checks are defined or if ACLs are enabled. It syncs health
+    checks from ECS to Consul (see [ECS Health Check Syncing](#ecs-health-check-syncing)).
+- **T2:** The `sidecar-proxy` container is marked as healthy by ECS. It uses a health check that
+  detects if its public listener port is open. At this time, your application containers are started
+  since all Consul machinery is ready to service requests.
 
 ## Task Shutdown
 
@@ -62,10 +76,19 @@ This diagram shows an example timeline of a task shutting down:
 - **T0**: ECS sends a TERM signal to all containers. Each container reacts to the TERM signal:
   - `consul-client` begins to gracefully leave the Consul cluster.
   - `health-sync` stops syncing health status from ECS into Consul checks.
-  - `sidecar-proxy` ignores the TERM signal and continues running until the `user-app` container exits. This allows the application container to continue making outgoing requests through the proxy to the mesh.
-  - `user-app` exits if it is not configured to ignore the TERM signal. The `user-app` container will continue running if it is configured to ignore the TERM signal.
+  - `sidecar-proxy` ignores the TERM signal and continues running until the `user-app` container
+    exits. The custom entrypoint command, `consul-ecs envoy-entrypoint`, monitors the local ECS task
+    metadata. It waits until the `user-app` container has exited before terminating Envoy. This
+    enables the application to continue making outgoing requests through the proxy to the mesh for
+    graceful shutdown.
+  - `user-app` exits if it is not configured to ignore the TERM signal. The `user-app` container
+    will continue running if it is configured to ignore the TERM signal.
 - **T1**:
-  - `health-sync` updates its Consul checks to critical status and exits. This ensures this service instance is marked unhealthy.
+  - `health-sync` does the following:
+    - It updates its Consul checks to critical status and exits. This ensures this service instance is marked unhealthy.
+    - If ACLs are enabled, it runs `consul logout` for the two tokens created by the `consul-client` and `mesh-init` containers.
+      This removes those tokens from Consul. If `consul logout` fails for some reason, the ACL controller will remove the tokens
+      after the task has finished stopped.
   - `sidecar-proxy` notices the `user-app` container has stopped and exits.
 - **T2**: `consul-client` finishes gracefully leaving the Consul datacenter and exits.
 - **T3**:
@@ -73,45 +96,83 @@ This diagram shows an example timeline of a task shutting down:
   - Updates about this task have reached the rest of the Consul cluster, so downstream proxies have been updated to stopped sending traffic to this task.
 - **T4**: At this point task shutdown should be complete. Otherwise, ECS will send a KILL signal to any containers still running. The KILL signal cannot be ignored and will forcefully stop containers. This will interrupt in-progress operations and possibly cause errors.
 
+## ACL Tokens
+
+Two types of ACL tokens are required by ECS tasks:
+
+* **Client tokens:** used by the `consul-client` containers to join the Consul cluster
+* **Service tokens:** used by sidecar containers for service registration and health syncing
+
+With Consul on ECS, these tokens are obtained dynamically when a task starts up by logging
+in to Consul's AWS IAM auth method.
+
+### Consul Client Token
+
+Consul client tokens require `node:write` for any node name, which is necessary because the Consul node
+names on ECS are not known until runtime.
+
+### Service Token
+
+Service tokens are associated with a [service identity](/docs/security/acl#service-identities).
+The service identity includes `service:write` permissions for the service and sidecar proxy.
+
+### AWS IAM Auth Method
+
+When a service mesh task on ECS starts up, it runs two `consul login` commands to obtain a client
+token and a service token. When the task stops, it attempts two `consul logout` commands in order
+to destroy these tokens.
+
+During a `consul login`, the [task's IAM
+role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) is presented
+to the AWS IAM auth method on the Consul servers. The role is validated with AWS. If the role is
+valid, and if the auth method trusts the IAM role, then the role is permitted to login. A new Consul
+ACL token is created and [Binding Rules](/docs/security/acl/auth-methods#binding-rules) associate
+permissions with the newly crated token. These permissions are mapped to the token based on the IAM
+role details. For example, tags on the IAM role are used to specify the service name and the
+namespace to be associated with a service token.
+
+When using the Consul on ECS Terraform modules, the auth method will be configured automatically
+by the ACL controller.
+
 ## ACL Controller
 
-The ACL controller performs the following operations:
-* Provisions Consul ACL tokens for Consul clients and service mesh services.
+The ACL controller performs the following operations on the Consul servers:
+
 * Manages Consul admin partitions and namespaces.
+* Manages the Consul AWS IAM auth method.
+* Monitors tasks in ECS cluster where the controller is running.
+* Cleans up unused tokens created by `consul login`.
+* <EnterpriseAlert inline /> Creates partitions and namespaces.
 
-### Automatic ACL Token Provisioning
+Specifically, the controller does the following when it starts up:
 
-Consul ACL tokens secure communication between agents and services.
-The following containers in a task require an ACL token:
+* Creates the Consul role and policy used for client tokens if these do not exist
+* Creates instances of the Consul AWS IAM auth method if they do not exist. One instance of the auth
+  method is created for Consul client tokens, and a second instance of the auth method is configured
+  for service tokens.
+* Creates the binding rules for each auth method instance. These associate permissions to ACL tokens
+  when tasks log in to the AWS IAM auth method.
 
-- `consul-client`: The Consul client uses a token to authorize itself with Consul servers.
-  All `consul-client` containers share the same token.
-- `mesh-init`: The `mesh-init` container uses a token to register the service with Consul.
-  This token is unique for the Consul service, and is shared by instances of the service.
-
-The ACL controller automatically creates ACL tokens for mesh-enabled tasks in an ECS cluster.
-The `acl-controller` Terraform module creates the ACL controller task. The controller creates the
-ACL token used by `consul-client` containers at startup and then watches for tasks in the cluster. It checks tags
-to determine if the task is mesh-enabled. If so, it creates the service ACL token for the task, if the
-token does not yet exist.
-
-The ACL controller stores all ACL tokens in AWS Secrets Manager, and tasks are configured to pull these
-tokens from AWS Secrets Manager when they start.
+After startup, the ACL controller monitors tasks in the same ECS cluster where the ACL controller is
+running, and cleans up tokens created by `consul login` for tasks that are no longer running.
+Normally, each task attempts `consul logout` commands when the task stops to destroy its tokens.
+However, in unstable conditions the `consul logout` command may fail to cleanup a token.
+The ACL controller runs continually to ensure those unused tokens are soon removed.
 
 ### Admin Partitions and Namespaces<EnterpriseAlert inline />
 
 When [admin partitions and namespaces](/docs/ecs/enterprise#admin-partitions-and-namespaces) are enabled,
-the ACL controller is assigned to its configured admin partition. The ACL controller provisions ACL
-tokens for tasks in a single admin partition and supports one ACL controller instance per ECS
+the ACL controller is assigned to its configured admin partition. It supports one ACL controller instance per ECS
 cluster. This results in an architecture with one admin partition per ECS cluster.
 
-The ACL controller automatically performs the following actions:
-* Creates its admin partition at startup if it does not exist.
-* Inspects ECS task tags for the task's intended partition and namespace.
-  The ACL controller ignores tasks that do not match the `partition` tag.
+When admin partitions and namespace are enabled, the ACL controller performs the following
+additional actions:
+
+* At startup, creates its assigned admin partition if it does not exist.
+* Inspects task tags for new ECS tasks to discover the task's intended partition
+  and namespace. The ACL controller ignores tasks with a partition tag that does not match the
+  controller's assigned partition.
 * Creates namespaces when tasks start up. Namespaces are only created if they do not exist.
-* Provisions ACL tokens and ACL policies that are scoped to the applicable admin partition and namespace.
-* Provision ACL tokens that allow services to communicate with upstreams across admin partitions and namespaces.
 
 ## ECS Health Check Syncing
 
@@ -121,6 +182,5 @@ If the following conditions apply, ECS health checks automatically sync with Con
 * have ECS `healthChecks`
 * are not configured with native Consul health checks
 
-The `mesh-init` container creates a TTL health check for
-every container that fits these criteria and the `health-sync` container ensures
-that the ECS and Consul health checks remain in sync.
+The `mesh-init` container creates a TTL health check for every container that fits these criteria
+and the `health-sync` container ensures that the ECS and Consul health checks remain in sync.
