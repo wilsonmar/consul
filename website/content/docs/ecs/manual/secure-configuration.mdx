@@ -31,16 +31,16 @@ See [Install the ACL Controller](/docs/ecs/manual/acl-controller) for instructio
 ACL controller.
 
 Consul on ECS uses the AWS IAM Auth Method to enable ECS tasks to automatically obtain Consul ACL tokens during startup.
-See the [Architecture](/docs/ecs/architecture) for an overview of task startup, task shutdown, ACL tokens, and the
+See the [Architecture](/docs/ecs/architecture) page for an overview of task startup, task shutdown, ACL tokens, and the
 AWS IAM auth method for Consul on ECS. Refer to the [AWS IAM auth method](/docs/security/acl/auth-methods/aws-iam) documentation
 for additional configuration options for the auth method.
 
 ### ECS Task Role Configuration
 
-The ECS task role is an IAM role associated with an ECS task.
-The `consul login` command obtains credentials for this role and uses those credentials
-to sign the login request to the AWS IAM auth method. This proves the ECS task's identity
-to the Consul servers.
+The ECS [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html)
+is an IAM role associated with an ECS task. The `consul login` command obtains credentials for this
+role and uses those credentials to sign the login request to the AWS IAM auth method. This proves
+the ECS task's identity to the Consul servers.
 
 The task role must be configured with the following details.
 
@@ -48,8 +48,8 @@ The task role must be configured with the following details.
   [IAM Policies](/docs/security/acl/auth-methods/aws-iam#iam-policies) for details.
 * A `consul.hashicorp.com.service-name` tag on the task role which contains the Consul service name
   for the application in this task.
-* <EnterpriseAlert inline /> A <code>consul.hashicorp.com.namespace</code> tag indicated the
-  namespace where this service is registering.
+* <EnterpriseAlert inline /> A <code>consul.hashicorp.com.namespace</code> tag on the task role
+  indicating the namespace where this service is registering.
 
 The following sections describe how to configure the auth method to enable task roles to
 successfully authenticate to the AWS IAM auth method and obtain tokens with the necessary
@@ -186,7 +186,7 @@ example secret ARNs when using AWS Secrets Manager:
 
 The following secrets must be passed to the `consul-client` container:
 
-* Consul server CA certificate
+* Consul server CA certificates
 * Gossip encryption key
 
 The following example shows how to include these secrets in the task definition. The `secrets`
@@ -382,12 +382,14 @@ The following *additional* options should be set in the [`CONSUL_ECS_CONFIG_JSON
 
 </CodeBlockConfig>
 
-| Field name                                                                      | Type    | Description                                                                             |
-| ------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------    |
-| `consulHTTPAddr` | string  | HTTP(S) address for the Consul server. |
-| `consulCACertFile` | string | Path of the CA cert file for Consul's HTTPS interface. Not required for Consul servers in HCP. |
-| `consulLogin.enabled` | boolean | Must be set to true to log in to the auth method. |
-| `consulLogin.method` | string | Must be set to the name of the auth method instance for service tokens. |
-| `consulLogin.extraLoginFlags` | list | Additional flags passed to the `consul login` command. <EnterpriseAlert inline /> This shows how to pass the Consul Enterprise admin partition to the `consul login` command. |
+The following table explains the additional fields for the `CONSUL_ECS_CONFIG_JSON`:
 
+
+| Field name                    | Type    | Description                                                                                                                                                                   |
+| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `consulHTTPAddr`              | string  | HTTP(S) address for the Consul server.                                                                                                                                        |
+| `consulCACertFile`            | string  | Path of the CA cert file for Consul's HTTPS interface. Not required for Consul servers in HCP.                                                                                |
+| `consulLogin.enabled`         | boolean | Must be set to true to log in to the auth method.                                                                                                                             |
+| `consulLogin.method`          | string  | Must be set to the name of the auth method instance for service tokens.                                                                                                       |
+| `consulLogin.extraLoginFlags` | list    | Additional flags passed to the `consul login` command. <EnterpriseAlert inline /> This shows how to pass the Consul Enterprise admin partition to the `consul login` command. |
 
