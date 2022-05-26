@@ -1,0 +1,3 @@
+```release-note:feature
+xds: Consul servers can now handle xDS streams for arbitrary proxy services in the catalog
+```
