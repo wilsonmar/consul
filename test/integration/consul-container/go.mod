@@ -21,7 +21,7 @@ require (
 	github.com/mitchellh/mapstructure v1.4.2 // indirect
 	github.com/stretchr/testify v1.7.0
 	github.com/testcontainers/testcontainers-go v0.13.0
-	golang.org/x/net v0.0.0-20211209124913-491a49abca63 // indirect
+	golang.org/x/net v0.7.0 // indirect
 	google.golang.org/grpc v1.41.0 // indirect
 )
 
